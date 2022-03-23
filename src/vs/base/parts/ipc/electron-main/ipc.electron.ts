@@ -11,7 +11,7 @@ import { ClientConnectionEvent, IPCServer } from 'vs/base/parts/ipc/common/ipc';
 import { Protocol as ElectronProtocol } from 'vs/base/parts/ipc/common/ipc.electron';
 
 interface IIPCEvent {
-	event: { sender: WebContents; };
+	event: { sender: WebContents };
 	message: Buffer | null;
 }
 
@@ -23,7 +23,7 @@ function createScopedOnMessageEvent(senderId: number, eventName: string): Event<
 }
 
 /**
- * An implemention of `IPCServer` on top of Electron `ipcMain` API.
+ * An implementation of `IPCServer` on top of Electron `ipcMain` API.
  */
 export class Server extends IPCServer {
 

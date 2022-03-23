@@ -17,7 +17,6 @@
   ],
   "main": "./client/out/node/cssClientMain",
   "browser": "./client/dist/browser/cssClientMain",
-  "enableProposedApi": true,
   "capabilities": {
     "virtualWorkspaces": true,
     "untrustedWorkspaces": {
@@ -25,8 +24,8 @@
     }
   },
   "scripts": {
-    "compile": "gulp compile-extension:css-language-features-client compile-extension:css-language-features-server",
-    "watch": "gulp watch-extension:css-language-features-client watch-extension:css-language-features-server",
+    "compile": "npx gulp compile-extension:css-language-features-client compile-extension:css-language-features-server",
+    "watch": "npx gulp watch-extension:css-language-features-client watch-extension:css-language-features-server",
     "test": "node ../../node_modules/mocha/bin/mocha",
     "install-client-next": "yarn add vscode-languageclient@next"
   },
@@ -308,6 +307,30 @@
             ],
             "default": "off",
             "description": "%css.trace.server.desc%"
+          },
+          "css.format.enable": {
+            "type": "boolean",
+            "scope": "window",
+            "default": true,
+            "description": "%css.format.enable.desc%"
+          },
+          "css.format.selectorSeparatorNewline": {
+            "type": "boolean",
+            "scope": "resource",
+            "default": true,
+            "markdownDescription": "%css.format.selectorSeparatorNewline.desc%"
+          },
+          "css.format.newlineBetweenRules": {
+            "type": "boolean",
+            "scope": "resource",
+            "default": true,
+            "markdownDescription": "%css.format.newlineBetweenRules.desc%"
+          },
+          "css.format.spaceAroundSelectorSeparator": {
+            "type": "boolean",
+            "scope": "resource",
+            "default": false,
+            "markdownDescription": "%css.format.spaceAroundSelectorSeparator.desc%"
           }
         }
       },
@@ -564,6 +587,30 @@
             ],
             "default": "warning",
             "description": "%scss.lint.unknownAtRules.desc%"
+          },
+          "scss.format.enable": {
+            "type": "boolean",
+            "scope": "window",
+            "default": true,
+            "description": "%scss.format.enable.desc%"
+          },
+          "scss.format.selectorSeparatorNewline": {
+            "type": "boolean",
+            "scope": "resource",
+            "default": true,
+            "markdownDescription": "%scss.format.selectorSeparatorNewline.desc%"
+          },
+          "scss.format.newlineBetweenRules": {
+            "type": "boolean",
+            "scope": "resource",
+            "default": true,
+            "markdownDescription": "%scss.format.newlineBetweenRules.desc%"
+          },
+          "scss.format.spaceAroundSelectorSeparator": {
+            "type": "boolean",
+            "scope": "resource",
+            "default": false,
+            "markdownDescription": "%scss.format.spaceAroundSelectorSeparator.desc%"
           }
         }
       },
@@ -821,6 +868,30 @@
             ],
             "default": "warning",
             "description": "%less.lint.unknownAtRules.desc%"
+          },
+          "less.format.enable": {
+            "type": "boolean",
+            "scope": "window",
+            "default": true,
+            "description": "%less.format.enable.desc%"
+          },
+          "less.format.selectorSeparatorNewline": {
+            "type": "boolean",
+            "scope": "resource",
+            "default": true,
+            "markdownDescription": "%less.format.selectorSeparatorNewline.desc%"
+          },
+          "less.format.newlineBetweenRules": {
+            "type": "boolean",
+            "scope": "resource",
+            "default": true,
+            "markdownDescription": "%less.format.newlineBetweenRules.desc%"
+          },
+          "less.format.spaceAroundSelectorSeparator": {
+            "type": "boolean",
+            "scope": "resource",
+            "default": false,
+            "markdownDescription": "%less.format.spaceAroundSelectorSeparator.desc%"
           }
         }
       }
@@ -850,10 +921,10 @@
   "dependencies": {
     "vscode-languageclient": "^7.0.0",
     "vscode-nls": "^5.0.0",
-    "vscode-uri": "^3.0.2"
+    "vscode-uri": "^3.0.3"
   },
   "devDependencies": {
-    "@types/node": "14.x"
+    "@types/node": "16.x"
   },
   "repository": {
     "type": "git",

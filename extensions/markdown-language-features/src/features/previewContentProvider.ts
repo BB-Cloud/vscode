@@ -5,11 +5,11 @@
 
 import * as vscode from 'vscode';
 import * as nls from 'vscode-nls';
+import * as uri from 'vscode-uri';
 import { Logger } from '../logger';
 import { MarkdownEngine } from '../markdownEngine';
 import { MarkdownContributionProvider } from '../markdownExtensions';
 import { ContentSecurityPolicyArbiter, MarkdownPreviewSecurityLevel } from '../security';
-import { basename, dirname, isAbsolute, join } from '../util/path';
 import { WebviewResourceProvider } from '../util/resources';
 import { MarkdownPreviewConfiguration, MarkdownPreviewConfigurationManager } from './previewConfig';
 
@@ -52,7 +52,14 @@ export class MarkdownContentProvider {
 		private readonly cspArbiter: ContentSecurityPolicyArbiter,
 		private readonly contributionProvider: MarkdownContributionProvider,
 		private readonly logger: Logger
-	) { }
+	) {
+		this.iconPath = {
+			dark: vscode.Uri.joinPath(this.context.extensionUri, 'media', 'preview-dark.svg'),
+			light: vscode.Uri.joinPath(this.context.extensionUri, 'media', 'preview-light.svg'),
+		};
+	}
+
+	public readonly iconPath: { light: vscode.Uri; dark: vscode.Uri };
 
 	public async provideTextDocumentContent(
 		markdownDocument: vscode.TextDocument,
@@ -81,7 +88,7 @@ export class MarkdownContentProvider {
 		const nonce = getNonce();
 		const csp = this.getCsp(resourceProvider, sourceUri, nonce);
 
-		const body = await this.engine.render(markdownDocument, resourceProvider);
+		const body = await this.markdownBody(markdownDocument, resourceProvider);
 		const html = `<!DOCTYPE html>
 			<html style="${escapeAttribute(this.getSettingsOverrideStyles(config))}">
 			<head>
@@ -97,7 +104,6 @@ export class MarkdownContentProvider {
 			</head>
 			<body class="vscode-body ${config.scrollBeyondLastLine ? 'scrollBeyondLastLine' : ''} ${config.wordWrap ? 'wordWrap' : ''} ${config.markEditorSelection ? 'showEditorSelection' : ''}">
 				${body.html}
-				<div class="code-line" data-line="${markdownDocument.lineCount}"></div>
 				${this.getScripts(resourceProvider, nonce)}
 			</body>
 			</html>`;
@@ -107,10 +113,22 @@ export class MarkdownContentProvider {
 		};
 	}
 
+	public async markdownBody(
+		markdownDocument: vscode.TextDocument,
+		resourceProvider: WebviewResourceProvider,
+	): Promise<MarkdownContentProviderOutput> {
+		const rendered = await this.engine.render(markdownDocument, resourceProvider);
+		const html = `<div class="markdown-body" dir="auto">${rendered.html}<div class="code-line" data-line="${markdownDocument.lineCount}"></div></div>`;
+		return {
+			html,
+			containingImages: rendered.containingImages
+		};
+	}
+
 	public provideFileNotFoundContent(
 		resource: vscode.Uri,
 	): string {
-		const resourcePath = basename(resource.fsPath);
+		const resourcePath = uri.Utils.basename(resource);
 		const body = localize('preview.notFound', '{0} cannot be found', resourcePath);
 		return `<!DOCTYPE html>
 			<html>
@@ -136,7 +154,7 @@ export class MarkdownContentProvider {
 		}
 
 		// Assume it must be a local file
-		if (isAbsolute(href)) {
+		if (href.startsWith('/') || /^[a-z]:\\/i.test(href)) {
 			return resourceProvider.asWebviewUri(vscode.Uri.file(href)).toString();
 		}
 
@@ -147,7 +165,7 @@ export class MarkdownContentProvider {
 		}
 
 		// Otherwise look relative to the markdown file
-		return resourceProvider.asWebviewUri(vscode.Uri.file(join(dirname(resource.fsPath), href))).toString();
+		return resourceProvider.asWebviewUri(vscode.Uri.joinPath(uri.Utils.dirname(resource), href)).toString();
 	}
 
 	private computeCustomStyleSheetIncludes(resourceProvider: WebviewResourceProvider, resource: vscode.Uri, config: MarkdownPreviewConfiguration): string {

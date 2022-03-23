@@ -21,11 +21,13 @@ import { LinkedList } from 'vs/base/common/linkedList';
 import { CancellationToken } from 'vs/base/common/cancellation';
 import { ILifecycleService, ShutdownReason } from 'vs/workbench/services/lifecycle/common/lifecycle';
 import { IDialogService } from 'vs/platform/dialogs/common/dialogs';
+import { ResourceMap } from 'vs/base/common/map';
 
 class BulkEdit {
 
 	constructor(
 		private readonly _label: string | undefined,
+		private readonly _code: string | undefined,
 		private readonly _editor: ICodeEditor | undefined,
 		private readonly _progress: IProgress<IProgressStep>,
 		private readonly _token: CancellationToken,
@@ -40,14 +42,28 @@ class BulkEdit {
 	}
 
 	ariaMessage(): string {
-		const editCount = this._edits.length;
-		const resourceCount = this._edits.length;
-		if (editCount === 0) {
+
+		let otherResources = new ResourceMap<boolean>();
+		let textEditResources = new ResourceMap<boolean>();
+		let textEditCount = 0;
+		for (let edit of this._edits) {
+			if (edit instanceof ResourceTextEdit) {
+				textEditCount += 1;
+				textEditResources.set(edit.resource, true);
+			} else if (edit instanceof ResourceFileEdit) {
+				otherResources.set(edit.oldResource ?? edit.newResource!, true);
+			}
+		}
+		if (this._edits.length === 0) {
 			return localize('summary.0', "Made no edits");
-		} else if (editCount > 1 && resourceCount > 1) {
-			return localize('summary.nm', "Made {0} text edits in {1} files", editCount, resourceCount);
+		} else if (otherResources.size === 0) {
+			if (textEditCount > 1 && textEditResources.size > 1) {
+				return localize('summary.nm', "Made {0} text edits in {1} files", textEditCount, textEditResources.size);
+			} else {
+				return localize('summary.n0', "Made {0} text edits in one file", textEditCount);
+			}
 		} else {
-			return localize('summary.n0', "Made {0} text edits in one file", editCount, resourceCount);
+			return localize('summary.textFiles', "Made {0} text edits in {1} files, also created or deleted {2} files", textEditCount, textEditResources.size, otherResources.size);
 		}
 	}
 
@@ -93,13 +109,13 @@ class BulkEdit {
 
 	private async _performFileEdits(edits: ResourceFileEdit[], undoRedoGroup: UndoRedoGroup, undoRedoSource: UndoRedoSource | undefined, confirmBeforeUndo: boolean, progress: IProgress<void>) {
 		this._logService.debug('_performFileEdits', JSON.stringify(edits));
-		const model = this._instaService.createInstance(BulkFileEdits, this._label || localize('workspaceEdit', "Workspace Edit"), undoRedoGroup, undoRedoSource, confirmBeforeUndo, progress, this._token, edits);
+		const model = this._instaService.createInstance(BulkFileEdits, this._label || localize('workspaceEdit', "Workspace Edit"), this._code || 'undoredo.workspaceEdit', undoRedoGroup, undoRedoSource, confirmBeforeUndo, progress, this._token, edits);
 		await model.apply();
 	}
 
 	private async _performTextEdits(edits: ResourceTextEdit[], undoRedoGroup: UndoRedoGroup, undoRedoSource: UndoRedoSource | undefined, progress: IProgress<void>): Promise<void> {
 		this._logService.debug('_performTextEdits', JSON.stringify(edits));
-		const model = this._instaService.createInstance(BulkTextEdits, this._label || localize('workspaceEdit', "Workspace Edit"), this._editor, undoRedoGroup, undoRedoSource, progress, this._token, edits);
+		const model = this._instaService.createInstance(BulkTextEdits, this._label || localize('workspaceEdit', "Workspace Edit"), this._code || 'undoredo.workspaceEdit', this._editor, undoRedoGroup, undoRedoSource, progress, this._token, edits);
 		await model.apply();
 	}
 
@@ -184,6 +200,7 @@ export class BulkEditService implements IBulkEditService {
 		const bulkEdit = this._instaService.createInstance(
 			BulkEdit,
 			label,
+			options?.code,
 			codeEditor,
 			options?.progress ?? Progress.None,
 			options?.token ?? CancellationToken.None,

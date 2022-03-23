@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { ICodeEditor } from 'vs/editor/browser/editorBrowser';
-import { TextEdit, WorkspaceEdit, WorkspaceEditMetadata, WorkspaceFileEdit, WorkspaceFileEditOptions, WorkspaceTextEdit } from 'vs/editor/common/modes';
+import { TextEdit, WorkspaceEdit, WorkspaceEditMetadata, WorkspaceFileEdit, WorkspaceFileEditOptions, WorkspaceTextEdit } from 'vs/editor/common/languages';
 import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
 import { IProgress, IProgressStep } from 'vs/platform/progress/common/progress';
 import { IDisposable } from 'vs/base/common/lifecycle';
@@ -70,6 +70,7 @@ export interface IBulkEditOptions {
 	token?: CancellationToken;
 	showPreview?: boolean;
 	label?: string;
+	code?: string;
 	quotableLabel?: string;
 	undoRedoSource?: UndoRedoSource;
 	undoRedoGroupId?: number;

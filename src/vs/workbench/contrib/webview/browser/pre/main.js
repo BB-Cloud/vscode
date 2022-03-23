@@ -6,11 +6,12 @@
 
 /// <reference lib="dom" />
 
-
-const isSafari = navigator.vendor && navigator.vendor.indexOf('Apple') > -1 &&
+const isSafari = (
+	navigator.vendor && navigator.vendor.indexOf('Apple') > -1 &&
 	navigator.userAgent &&
 	navigator.userAgent.indexOf('CriOS') === -1 &&
-	navigator.userAgent.indexOf('FxiOS') === -1;
+	navigator.userAgent.indexOf('FxiOS') === -1
+);
 
 const isFirefox = (
 	navigator.userAgent &&
@@ -30,7 +31,7 @@ const expectedWorkerVersion = parseInt(searchParams.get('swVersion'));
  * @param {() => void} handlers.onBlur
  */
 const trackFocus = ({ onFocus, onBlur }) => {
-	const interval = 50;
+	const interval = 250;
 	let isFocused = document.hasFocus();
 	setInterval(() => {
 		const isCurrentlyFocused = document.hasFocus();
@@ -47,11 +48,11 @@ const trackFocus = ({ onFocus, onBlur }) => {
 };
 
 const getActiveFrame = () => {
-	return /** @type {HTMLIFrameElement} */ (document.getElementById('active-frame'));
+	return /** @type {HTMLIFrameElement | undefined} */ (document.getElementById('active-frame'));
 };
 
 const getPendingFrame = () => {
-	return /** @type {HTMLIFrameElement} */ (document.getElementById('pending-frame'));
+	return /** @type {HTMLIFrameElement | undefined} */ (document.getElementById('pending-frame'));
 };
 
 /**
@@ -90,7 +91,7 @@ defaultStyles.textContent = `
 		max-height: 100%;
 	}
 
-	a {
+	a, a code {
 		color: var(--vscode-textLink-foreground);
 	}
 
@@ -150,6 +151,12 @@ defaultStyles.textContent = `
 	}
 	::-webkit-scrollbar-thumb:active {
 		background-color: var(--vscode-scrollbarSlider-activeBackground);
+	}
+	::highlight(find-highlight) {
+		background-color: var(--vscode-editor-findMatchHighlightBackground);
+	}
+	::highlight(current-find-highlight) {
+		background-color: var(--vscode-editor-findMatchBackground);
 	}`;
 
 /**
@@ -197,17 +204,15 @@ function getVsCodeApiScript(allowMultipleAPIAcquire, state) {
 }
 
 /** @type {Promise<void>} */
-const workerReady = new Promise(async (resolve, reject) => {
+const workerReady = new Promise((resolve, reject) => {
 	if (!areServiceWorkersEnabled()) {
 		return reject(new Error('Service Workers are not enabled. Webviews will not work. Try disabling private/incognito mode.'));
 	}
 
-	const swPath = `service-worker.js${self.location.search}`;
-
-	navigator.serviceWorker.register(swPath).then(
-		async registration => {
-			await navigator.serviceWorker.ready;
-
+	const swPath = `service-worker.js?v=${expectedWorkerVersion}&vscode-resource-base-authority=${searchParams.get('vscode-resource-base-authority')}&remoteAuthority=${searchParams.get('remoteAuthority') ?? ''}`;
+	navigator.serviceWorker.register(swPath)
+		.then(() => navigator.serviceWorker.ready)
+		.then(async registration => {
 			/**
 			 * @param {MessageEvent} event
 			 */
@@ -233,19 +238,42 @@ const workerReady = new Promise(async (resolve, reject) => {
 				}
 			};
 			navigator.serviceWorker.addEventListener('message', versionHandler);
-			assertIsDefined(registration.active).postMessage({ channel: 'version' });
-		},
-		error => {
+
+			const postVersionMessage = (/** @type {ServiceWorker} */ controller) => {
+				controller.postMessage({ channel: 'version' });
+			};
+
+			// At this point, either the service worker is ready and
+			// became our controller, or we need to wait for it.
+			// Note that navigator.serviceWorker.controller could be a
+			// controller from a previously loaded service worker.
+			const currentController = navigator.serviceWorker.controller;
+			if (currentController?.scriptURL.endsWith(swPath)) {
+				// service worker already loaded & ready to receive messages
+				postVersionMessage(currentController);
+			} else {
+				// either there's no controlling service worker, or it's an old one:
+				// wait for it to change before posting the message
+				const onControllerChange = () => {
+					navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
+					postVersionMessage(navigator.serviceWorker.controller);
+				};
+				navigator.serviceWorker.addEventListener('controllerchange', onControllerChange);
+			}
+		}).catch(error => {
 			reject(new Error(`Could not register service workers: ${error}.`));
 		});
 });
 
 const hostMessaging = new class HostMessaging {
+
 	constructor() {
+		this.channel = new MessageChannel();
+
 		/** @type {Map<string, Array<(event: MessageEvent, data: any) => void>>} */
 		this.handlers = new Map();
 
-		window.addEventListener('message', (e) => {
+		this.channel.port1.onmessage = (e) => {
 			const channel = e.data.channel;
 			const handlers = this.handlers.get(channel);
 			if (handlers) {
@@ -255,15 +283,16 @@ const hostMessaging = new class HostMessaging {
 			} else {
 				console.log('no handler for ', e);
 			}
-		});
+		};
 	}
 
 	/**
 	 * @param {string} channel
 	 * @param {any} data
+	 * @param {any} [transfer]
 	 */
-	postMessage(channel, data) {
-		window.parent.postMessage({ target: ID, channel, data }, '*');
+	postMessage(channel, data, transfer) {
+		this.channel.port1.postMessage({ channel, data }, transfer);
 	}
 
 	/**
@@ -277,6 +306,45 @@ const hostMessaging = new class HostMessaging {
 			this.handlers.set(channel, handlers);
 		}
 		handlers.push(handler);
+	}
+
+	async signalReady() {
+		const start = (/** @type {string} */ parentOrigin) => {
+			window.parent.postMessage({ target: ID, channel: 'webview-ready', data: {} }, parentOrigin, [this.channel.port2]);
+		};
+
+		const parentOrigin = searchParams.get('parentOrigin');
+		const id = searchParams.get('id');
+
+		const hostname = location.hostname;
+
+		if (!crypto.subtle) {
+			// cannot validate, not running in a secure context
+			throw new Error(`Cannot validate in current context!`);
+		}
+
+		// Here the `parentOriginHash()` function from `src/vs/workbench/common/webview.ts` is inlined
+		// compute a sha-256 composed of `parentOrigin` and `salt` converted to base 32
+		let parentOriginHash;
+		try {
+			const strData = JSON.stringify({ parentOrigin, salt: id });
+			const encoder = new TextEncoder();
+			const arrData = encoder.encode(strData);
+			const hash = await crypto.subtle.digest('sha-256', arrData);
+			const hashArray = Array.from(new Uint8Array(hash));
+			const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+			// sha256 has 256 bits, so we need at most ceil(lg(2^256-1)/lg(32)) = 52 chars to represent it in base 32
+			parentOriginHash = BigInt(`0x${hashHex}`).toString(32).padStart(52, '0');
+		} catch (err) {
+			throw err instanceof Error ? err : new Error(String(err));
+		}
+
+		if (hostname === parentOriginHash || hostname.startsWith(parentOriginHash + '.')) {
+			// validation succeeded!
+			return start(parentOrigin);
+		}
+
+		throw new Error(`Expected '${parentOriginHash}' as hostname or subdomain!`);
 	}
 }();
 
@@ -323,7 +391,7 @@ const unloadMonitor = new class {
 		});
 	}
 
-	onIframeLoaded(/** @type {HTMLIFrameElement} */frame) {
+	onIframeLoaded(/** @type {HTMLIFrameElement} */ frame) {
 		frame.contentWindow.addEventListener('keydown', e => {
 			this.isModifierKeyDown = e.metaKey || e.ctrlKey || e.altKey;
 		});
@@ -355,6 +423,12 @@ const initData = {
 
 	/** @type {string | undefined} */
 	themeName: undefined,
+
+	/** @type {boolean} */
+	screenReader: false,
+
+	/** @type {boolean} */
+	reduceMotion: false,
 };
 
 hostMessaging.onMessage('did-load-resource', (_event, data) => {
@@ -387,9 +461,17 @@ const applyStyles = (document, body) => {
 	}
 
 	if (body) {
-		body.classList.remove('vscode-light', 'vscode-dark', 'vscode-high-contrast');
+		body.classList.remove('vscode-light', 'vscode-dark', 'vscode-high-contrast', 'vscode-reduce-motion', 'vscode-using-screen-reader');
 		if (initData.activeTheme) {
 			body.classList.add(initData.activeTheme);
+		}
+
+		if (initData.reduceMotion) {
+			body.classList.add('vscode-reduce-motion');
+		}
+
+		if (initData.screenReader) {
+			body.classList.add('vscode-using-screen-reader');
 		}
 
 		body.dataset.vscodeThemeKind = initData.activeTheme;
@@ -420,11 +502,11 @@ const applyStyles = (document, body) => {
  * @param {MouseEvent} event
  */
 const handleInnerClick = (event) => {
-	if (!event || !event.view || !event.view.document) {
+	if (!event?.view?.document) {
 		return;
 	}
 
-	const baseElement = event.view.document.getElementsByTagName('base')[0];
+	const baseElement = event.view.document.querySelector('base');
 
 	for (const pathElement of event.composedPath()) {
 		/** @type {any} */
@@ -433,10 +515,9 @@ const handleInnerClick = (event) => {
 			if (node.getAttribute('href') === '#') {
 				event.view.scrollTo(0, 0);
 			} else if (node.hash && (node.getAttribute('href') === node.hash || (baseElement && node.href === baseElement.href + node.hash))) {
-				const scrollTarget = event.view.document.getElementById(node.hash.substr(1, node.hash.length - 1));
-				if (scrollTarget) {
-					scrollTarget.scrollIntoView();
-				}
+				const fragment = node.hash.slice(1);
+				const scrollTarget = event.view.document.getElementById(fragment) ?? event.view.document.getElementById(decodeURIComponent(fragment));
+				scrollTarget?.scrollIntoView();
 			} else {
 				hostMessaging.postMessage('did-click-link', node.href.baseVal || node.href);
 			}
@@ -449,24 +530,23 @@ const handleInnerClick = (event) => {
 /**
  * @param {MouseEvent} event
  */
-const handleAuxClick =
-	(event) => {
-		// Prevent middle clicks opening a broken link in the browser
-		if (!event.view || !event.view.document) {
-			return;
-		}
+const handleAuxClick = (event) => {
+	// Prevent middle clicks opening a broken link in the browser
+	if (!event?.view?.document) {
+		return;
+	}
 
-		if (event.button === 1) {
-			for (const pathElement of event.composedPath()) {
-				/** @type {any} */
-				const node = pathElement;
-				if (node.tagName && node.tagName.toLowerCase() === 'a' && node.href) {
-					event.preventDefault();
-					return;
-				}
+	if (event.button === 1) {
+		for (const pathElement of event.composedPath()) {
+			/** @type {any} */
+			const node = pathElement;
+			if (node.tagName && node.tagName.toLowerCase() === 'a' && node.href) {
+				event.preventDefault();
+				return;
 			}
 		}
-	};
+	}
+};
 
 /**
  * @param {KeyboardEvent} e
@@ -476,7 +556,7 @@ const handleInnerKeydown = (e) => {
 	// make sure we block the browser from dispatching it. Instead VS Code
 	// handles these events and will dispatch a copy/paste back to the webview
 	// if needed
-	if (isUndoRedo(e) || isPrint(e)) {
+	if (isUndoRedo(e) || isPrint(e) || isFindEvent(e)) {
 		e.preventDefault();
 	} else if (isCopyPasteOrCut(e)) {
 		if (onElectron) {
@@ -541,6 +621,15 @@ function isPrint(e) {
 	return hasMeta && e.key.toLowerCase() === 'p';
 }
 
+/**
+ * @param {KeyboardEvent} e
+ * @return {boolean}
+ */
+function isFindEvent(e) {
+	const hasMeta = e.ctrlKey || e.metaKey;
+	return hasMeta && e.key.toLowerCase() === 'f';
+}
+
 let isHandlingScroll = false;
 
 /**
@@ -571,7 +660,7 @@ const handleInnerScroll = (event) => {
 
 	const target = /** @type {HTMLDocument | null} */ (event.target);
 	const currentTarget = /** @type {Window | null} */ (event.currentTarget);
-	if (!target || !currentTarget || !target.body) {
+	if (!currentTarget || !target?.body) {
 		return;
 	}
 
@@ -615,6 +704,7 @@ function areServiceWorkersEnabled() {
  *     contents: string;
  *     options: {
  *         readonly allowScripts: boolean;
+ *         readonly allowForms: boolean;
  *         readonly allowMultipleAPIAcquire: boolean;
  *     }
  *     state: any;
@@ -640,6 +730,11 @@ function toContentHtml(data) {
 		}
 	});
 
+	// Set default aria role
+	if (!newDocument.body.hasAttribute('role')) {
+		newDocument.body.setAttribute('role', 'document');
+	}
+
 	// Inject default script
 	if (options.allowScripts) {
 		const defaultScript = newDocument.createElement('script');
@@ -652,6 +747,15 @@ function toContentHtml(data) {
 	newDocument.head.prepend(defaultStyles.cloneNode(true));
 
 	applyStyles(newDocument, newDocument.body);
+
+	// Strip out unsupported http-equiv tags
+	for (const metaElement of Array.from(newDocument.querySelectorAll('meta'))) {
+		const httpEquiv = metaElement.getAttribute('http-equiv');
+		if (httpEquiv && !/^(content-security-policy|default-style|content-type)$/i.test(httpEquiv)) {
+			console.warn(`Removing unsupported meta http-equiv: ${httpEquiv}`);
+			metaElement.remove();
+		}
+	}
 
 	// Check for CSP
 	const csp = newDocument.querySelector('meta[http-equiv="Content-Security-Policy"]');
@@ -686,6 +790,8 @@ onDomReady(() => {
 		initData.styles = data.styles;
 		initData.activeTheme = data.activeTheme;
 		initData.themeName = data.themeName;
+		initData.reduceMotion = data.reduceMotion;
+		initData.screenReader = data.screenReader;
 
 		const target = getActiveFrame();
 		if (!target) {
@@ -719,7 +825,6 @@ onDomReady(() => {
 	let updateId = 0;
 	hostMessaging.onMessage('content', async (_event, /** @type {ContentUpdateData} */ data) => {
 		const currentUpdateId = ++updateId;
-
 		try {
 			await workerReady;
 		} catch (e) {
@@ -773,7 +878,16 @@ onDomReady(() => {
 		const newFrame = document.createElement('iframe');
 		newFrame.setAttribute('id', 'pending-frame');
 		newFrame.setAttribute('frameborder', '0');
-		newFrame.setAttribute('sandbox', options.allowScripts ? 'allow-scripts allow-forms allow-same-origin allow-pointer-lock allow-downloads' : 'allow-same-origin allow-pointer-lock');
+
+		const sandboxRules = new Set(['allow-same-origin', 'allow-pointer-lock']);
+		if (options.allowScripts) {
+			sandboxRules.add('allow-scripts');
+			sandboxRules.add('allow-downloads');
+		}
+		if (options.allowForms) {
+			sandboxRules.add('allow-forms');
+		}
+		newFrame.setAttribute('sandbox', Array.from(sandboxRules).join(' '));
 		if (!isFirefox) {
 			newFrame.setAttribute('allow', options.allowScripts ? 'clipboard-read; clipboard-write;' : '');
 		}
@@ -804,7 +918,7 @@ onDomReady(() => {
 		}
 
 		if (!options.allowScripts && isSafari) {
-			// On Safari for iframes with scripts disabled, the `DOMContentLoaded` never seems to be fired.
+			// On Safari for iframes with scripts disabled, the `DOMContentLoaded` never seems to be fired: https://bugs.webkit.org/show_bug.cgi?id=33604
 			// Use polling instead.
 			const interval = setInterval(() => {
 				// If the frame is no longer mounted, loading has stopped
@@ -814,7 +928,7 @@ onDomReady(() => {
 				}
 
 				const contentDocument = assertIsDefined(newFrame.contentDocument);
-				if (contentDocument.readyState !== 'loading') {
+				if (contentDocument.location.pathname.endsWith('/fake.html') && contentDocument.readyState !== 'loading') {
 					clearInterval(interval);
 					onFrameLoaded(contentDocument);
 				}
@@ -839,6 +953,7 @@ onDomReady(() => {
 
 			const newFrame = getPendingFrame();
 			if (newFrame && newFrame.contentDocument && newFrame.contentDocument === contentDocument) {
+				const wasFocused = document.hasFocus();
 				const oldActiveFrame = getActiveFrame();
 				if (oldActiveFrame) {
 					document.body.removeChild(oldActiveFrame);
@@ -853,17 +968,15 @@ onDomReady(() => {
 				contentWindow.addEventListener('scroll', handleInnerScroll);
 				contentWindow.addEventListener('wheel', handleWheel);
 
-				if (document.hasFocus()) {
+				if (wasFocused) {
 					contentWindow.focus();
 				}
 
 				pendingMessages.forEach((message) => {
-					contentWindow.postMessage(message.message, '*', message.transfer);
+					contentWindow.postMessage(message.message, window.origin, message.transfer);
 				});
 				pendingMessages = [];
 			}
-
-			hostMessaging.postMessage('did-load');
 		};
 
 		/**
@@ -910,8 +1023,6 @@ onDomReady(() => {
 
 			unloadMonitor.onIframeLoaded(newFrame);
 		}
-
-		hostMessaging.postMessage('did-set-content', undefined);
 	});
 
 	// Forward message to the embedded iframe
@@ -920,7 +1031,7 @@ onDomReady(() => {
 		if (!pending) {
 			const target = getActiveFrame();
 			if (target) {
-				assertIsDefined(target.contentWindow).postMessage(data.message, '*', data.transfer);
+				assertIsDefined(target.contentWindow).postMessage(data.message, window.origin, data.transfer);
 				return;
 			}
 		}
@@ -939,6 +1050,49 @@ onDomReady(() => {
 		assertIsDefined(target.contentDocument).execCommand(data);
 	});
 
+	/** @type {string | undefined} */
+	let lastFindValue = undefined;
+
+	hostMessaging.onMessage('find', (_event, data) => {
+		const target = getActiveFrame();
+		if (!target) {
+			return;
+		}
+
+		if (!data.previous && lastFindValue !== data.value) {
+			// Reset selection so we start search at the head of the last search
+			const selection = target.contentWindow.getSelection();
+			selection.collapse(selection.anchorNode);
+		}
+		lastFindValue = data.value;
+
+		const didFind = (/** @type {any} */ (target.contentWindow)).find(
+			data.value,
+			/* caseSensitive*/ false,
+			/* backwards*/ data.previous,
+			/* wrapAround*/ true,
+			/* wholeWord */ false,
+			/* searchInFrames*/ false,
+			false);
+		hostMessaging.postMessage('did-find', didFind);
+	});
+
+	hostMessaging.onMessage('find-stop', (_event, data) => {
+		const target = getActiveFrame();
+		if (!target) {
+			return;
+		}
+
+		lastFindValue = undefined;
+
+		if (!data.clearSelection) {
+			const selection = target.contentWindow.getSelection();
+			for (let i = 0; i < selection.rangeCount; i++) {
+				selection.removeRange(selection.getRangeAt(i));
+			}
+		}
+	});
+
 	trackFocus({
 		onFocus: () => hostMessaging.postMessage('did-focus'),
 		onBlur: () => hostMessaging.postMessage('did-blur')
@@ -953,6 +1107,5 @@ onDomReady(() => {
 		}
 	};
 
-	// signal ready
-	hostMessaging.postMessage('webview-ready', {});
+	hostMessaging.signalReady();
 });

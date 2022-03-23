@@ -11,7 +11,7 @@ import { sep } from 'vs/base/common/path';
 // than it is to use String.prototype.localeCompare()
 
 // A collator with numeric sorting enabled, and no sensitivity to case, accents or diacritics.
-const intlFileNameCollatorBaseNumeric: IdleValue<{ collator: Intl.Collator, collatorIsNumeric: boolean }> = new IdleValue(() => {
+const intlFileNameCollatorBaseNumeric: IdleValue<{ collator: Intl.Collator; collatorIsNumeric: boolean }> = new IdleValue(() => {
 	const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 	return {
 		collator: collator,
@@ -132,7 +132,7 @@ export function compareFileExtensions(one: string | null, other: string | null):
 	return result;
 }
 
-/** Compares filenames by extenson, then by full filename. Mixes uppercase and lowercase names together. */
+/** Compares filenames by extension, then by full filename. Mixes uppercase and lowercase names together. */
 export function compareFileExtensionsDefault(one: string | null, other: string | null): number {
 	one = one || '';
 	other = other || '';

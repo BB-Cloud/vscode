@@ -12,15 +12,20 @@ import { Range } from 'vs/editor/common/core/range';
 import { localize } from 'vs/nls';
 import { IComputedStateAccessor, refreshComputedState } from 'vs/workbench/contrib/testing/common/getComputedState';
 import { IObservableValue, MutableObservableValue, staticObservableValue } from 'vs/workbench/contrib/testing/common/observableValue';
-import { ISerializedTestResults, ITestItem, ITestMessage, ITestRunTask, ITestTaskState, ResolvedTestRunRequest, TestItemExpandState, TestResultItem, TestResultState } from 'vs/workbench/contrib/testing/common/testCollection';
+import { IRichLocation, ISerializedTestResults, ITestItem, ITestMessage, ITestOutputMessage, ITestRunTask, ITestTaskState, ResolvedTestRunRequest, TestItemExpandState, TestMessageType, TestResultItem, TestResultState } from 'vs/workbench/contrib/testing/common/testCollection';
 import { TestCoverage } from 'vs/workbench/contrib/testing/common/testCoverage';
-import { maxPriority, statesInOrder } from 'vs/workbench/contrib/testing/common/testingStates';
+import { maxPriority, statesInOrder, terminalStatePriorities } from 'vs/workbench/contrib/testing/common/testingStates';
 
-export interface ITestRunTaskWithCoverage extends ITestRunTask {
+export interface ITestRunTaskResults extends ITestRunTask {
 	/**
 	 * Contains test coverage for the result, if it's available.
 	 */
 	readonly coverage: IObservableValue<TestCoverage | undefined>;
+
+	/**
+	 * Messages from the task not associated with any specific test.
+	 */
+	readonly otherMessages: ITestOutputMessage[];
 }
 
 export interface ITestResult {
@@ -58,7 +63,7 @@ export interface ITestResult {
 	/**
 	 * List of this result's subtasks.
 	 */
-	tasks: ReadonlyArray<ITestRunTaskWithCoverage>;
+	tasks: ReadonlyArray<ITestRunTaskResults>;
 
 	/**
 	 * Gets the state of the test by its extension-assigned ID.
@@ -133,6 +138,14 @@ export class LiveOutputController {
 
 	private readonly dataEmitter = new Emitter<VSBuffer>();
 	private readonly endEmitter = new Emitter<void>();
+	private _offset = 0;
+
+	/**
+	 * Gets the number of written bytes.
+	 */
+	public get offset() {
+		return this._offset;
+	}
 
 	constructor(
 		private readonly writer: Lazy<[VSBufferWriteableStream, Promise<void>]>,
@@ -149,6 +162,7 @@ export class LiveOutputController {
 
 		this.previouslyWritten?.push(data);
 		this.dataEmitter.fire(data);
+		this._offset += data.byteLength;
 
 		return this.writer.getValue()[0].write(data);
 	}
@@ -228,7 +242,7 @@ export const enum TestResultItemChangeReason {
 
 export type TestResultItemChange = { item: TestResultItem; result: ITestResult } & (
 	| { reason: TestResultItemChangeReason.Retired | TestResultItemChangeReason.ParentRetired | TestResultItemChangeReason.ComputedStateChange }
-	| { reason: TestResultItemChangeReason.OwnStateChange; previous: TestResultState }
+	| { reason: TestResultItemChangeReason.OwnStateChange; previousState: TestResultState; previousOwnDuration: number | undefined }
 );
 
 /**
@@ -243,7 +257,7 @@ export class LiveTestResult implements ITestResult {
 
 	public readonly onChange = this.changeEmitter.event;
 	public readonly onComplete = this.completeEmitter.event;
-	public readonly tasks: ITestRunTaskWithCoverage[] = [];
+	public readonly tasks: ITestRunTaskResults[] = [];
 	public readonly name = localize('runFinished', 'Test run at {0}', new Date().toLocaleString());
 
 	/**
@@ -302,11 +316,31 @@ export class LiveTestResult implements ITestResult {
 	}
 
 	/**
+	 * Appends output that occurred during the test run.
+	 */
+	public appendOutput(output: VSBuffer, taskId: string, location?: IRichLocation, testId?: string): void {
+		this.output.append(output);
+		const message: ITestOutputMessage = {
+			location,
+			message: output.toString(),
+			offset: this.output.offset,
+			type: TestMessageType.Info,
+		};
+
+		const index = this.mustGetTaskIndex(taskId);
+		if (testId) {
+			this.testById.get(testId)?.tasks[index].messages.push(message);
+		} else {
+			this.tasks[index].otherMessages.push(message);
+		}
+	}
+
+	/**
 	 * Adds a new run task to the results.
 	 */
 	public addTask(task: ITestRunTask) {
 		const index = this.tasks.length;
-		this.tasks.push({ ...task, coverage: new MutableObservableValue(undefined) });
+		this.tasks.push({ ...task, coverage: new MutableObservableValue(undefined), otherMessages: [] });
 
 		for (const test of this.tests) {
 			test.tasks.push({ duration: undefined, messages: [], state: TestResultState.Unset });
@@ -345,12 +379,18 @@ export class LiveTestResult implements ITestResult {
 		}
 
 		const index = this.mustGetTaskIndex(taskId);
-		if (duration !== undefined) {
-			entry.tasks[index].duration = duration;
-			entry.ownDuration = Math.max(entry.ownDuration || 0, duration);
+
+		const oldTerminalStatePrio = terminalStatePriorities[entry.tasks[index].state];
+		const newTerminalStatePrio = terminalStatePriorities[state];
+
+		// Ignore requests to set the state from one terminal state back to a
+		// "lower" one, e.g. from failed back to passed:
+		if (oldTerminalStatePrio !== undefined &&
+			(newTerminalStatePrio === undefined || newTerminalStatePrio < oldTerminalStatePrio)) {
+			return;
 		}
 
-		this.fireUpdateAndRefresh(entry, index, state);
+		this.fireUpdateAndRefresh(entry, index, state, duration);
 	}
 
 	/**
@@ -367,7 +407,8 @@ export class LiveTestResult implements ITestResult {
 			item: entry,
 			result: this,
 			reason: TestResultItemChangeReason.OwnStateChange,
-			previous: entry.ownComputedState,
+			previousState: entry.ownComputedState,
+			previousOwnDuration: entry.ownDuration,
 		});
 	}
 
@@ -454,11 +495,28 @@ export class LiveTestResult implements ITestResult {
 		}
 	}
 
-	private fireUpdateAndRefresh(entry: TestResultItem, taskIndex: number, newState: TestResultState) {
+	private fireUpdateAndRefresh(entry: TestResultItem, taskIndex: number, newState: TestResultState, newOwnDuration?: number) {
 		const previousOwnComputed = entry.ownComputedState;
+		const previousOwnDuration = entry.ownDuration;
+		const changeEvent: TestResultItemChange = {
+			item: entry,
+			result: this,
+			reason: TestResultItemChangeReason.OwnStateChange,
+			previousState: previousOwnComputed,
+			previousOwnDuration: previousOwnDuration,
+		};
+
 		entry.tasks[taskIndex].state = newState;
+		if (newOwnDuration !== undefined) {
+			entry.tasks[taskIndex].duration = newOwnDuration;
+			entry.ownDuration = Math.max(entry.ownDuration || 0, newOwnDuration);
+		}
+
 		const newOwnComputed = maxPriority(...entry.tasks.map(t => t.state));
 		if (newOwnComputed === previousOwnComputed) {
+			if (newOwnDuration !== previousOwnDuration) {
+				this.changeEmitter.fire(changeEvent); // fire manually since state change won't do it
+			}
 			return;
 		}
 
@@ -466,11 +524,11 @@ export class LiveTestResult implements ITestResult {
 		this.counts[previousOwnComputed]--;
 		this.counts[newOwnComputed]++;
 		refreshComputedState(this.computedStateAccessor, entry).forEach(t =>
-			this.changeEmitter.fire(
-				t === entry
-					? { item: entry, result: this, reason: TestResultItemChangeReason.OwnStateChange, previous: previousOwnComputed }
-					: { item: t, result: this, reason: TestResultItemChangeReason.ComputedStateChange }
-			),
+			this.changeEmitter.fire(t === entry ? changeEvent : {
+				item: t,
+				result: this,
+				reason: TestResultItemChangeReason.ComputedStateChange,
+			}),
 		);
 	}
 
@@ -504,15 +562,10 @@ export class LiveTestResult implements ITestResult {
 	private readonly doSerialize = new Lazy((): ISerializedTestResults => ({
 		id: this.id,
 		completedAt: this.completedAt!,
-		tasks: this.tasks,
+		tasks: this.tasks.map(t => ({ id: t.id, name: t.name, messages: t.otherMessages })),
 		name: this.name,
 		request: this.request,
-		items: [...this.testById.values()].map(entry => ({
-			...entry,
-			retired: undefined,
-			src: undefined,
-			children: [...entry.children.map(c => c.item.extId)],
-		})),
+		items: [...this.testById.values()].map(e => TestResultItem.serialize(e, [...e.children.map(c => c.item.extId)])),
 	}));
 }
 
@@ -538,7 +591,7 @@ export class HydratedTestResult implements ITestResult {
 	/**
 	 * @inheritdoc
 	 */
-	public readonly tasks: ITestRunTaskWithCoverage[];
+	public readonly tasks: ITestRunTaskResults[];
 
 	/**
 	 * @inheritdoc
@@ -566,12 +619,26 @@ export class HydratedTestResult implements ITestResult {
 	) {
 		this.id = serialized.id;
 		this.completedAt = serialized.completedAt;
-		this.tasks = serialized.tasks.map(task => ({ ...task, coverage: staticObservableValue(undefined) }));
+		this.tasks = serialized.tasks.map((task, i) => ({
+			id: task.id,
+			name: task.name,
+			running: false,
+			coverage: staticObservableValue(undefined),
+			otherMessages: task.messages.map(m => ({
+				message: m.message,
+				type: m.type,
+				offset: m.offset,
+				location: m.location && {
+					uri: URI.revive(m.location.uri),
+					range: Range.lift(m.location.range)
+				},
+			}))
+		}));
 		this.name = serialized.name;
 		this.request = serialized.request;
 
 		for (const item of serialized.items) {
-			const cast: TestResultItem = { ...item, retired: true };
+			const cast: TestResultItem = { ...item, retired: true } as any;
 			cast.item.uri = URI.revive(cast.item.uri);
 
 			for (const task of cast.tasks) {

@@ -12,22 +12,16 @@ export interface ILanguageDetectionService {
 	readonly _serviceBrand: undefined;
 
 	/**
-	 * @param modeId The modeId to check if language detection is currently enabled.
-	 * @returns whether or not language detection is on for this language mode.
+	 * @param languageId The languageId to check if language detection is currently enabled.
+	 * @returns whether or not language detection is on for this language.
 	 */
-	isEnabledForMode(modeId: string): boolean;
+	isEnabledForLanguage(languageId: string): boolean;
 
 	/**
 	 * @param resource The resource to detect the language for.
-	 * @returns the language mode for the given resource or undefined if the model is not confident enough.
+	 * @returns the language id for the given resource or undefined if the model is not confident enough.
 	 */
 	detectLanguage(resource: URI): Promise<string | undefined>;
-
-	/**
-	 * @param resource The resource to detect the language for.
-	 * @returns all possible language modes detected in this resource.
-	 */
-	detectLanguages(resource: URI): Promise<string[]>;
 }
 
 //#region Telemetry events
@@ -35,15 +29,17 @@ export interface ILanguageDetectionService {
 export const AutomaticLanguageDetectionLikelyWrongId = 'automaticlanguagedetection.likelywrong';
 
 export interface IAutomaticLanguageDetectionLikelyWrongData {
-	choseOtherGuessedLanguage: boolean;
 	currentLanguageId: string;
 	nextLanguageId: string;
+	lineCount: number;
+	modelPreference: string;
 }
 
 export type AutomaticLanguageDetectionLikelyWrongClassification = {
-	choseOtherGuessedLanguage: { classification: 'SystemMetaData', purpose: 'FeatureInsight' },
-	currentLanguageId: { classification: 'SystemMetaData', purpose: 'FeatureInsight' },
-	nextLanguageId: { classification: 'SystemMetaData', purpose: 'FeatureInsight' }
+	currentLanguageId: { classification: 'SystemMetaData'; purpose: 'FeatureInsight' };
+	nextLanguageId: { classification: 'SystemMetaData'; purpose: 'FeatureInsight' };
+	lineCount: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; isMeasurement: true };
+	modelPreference: { classification: 'SystemMetaData'; purpose: 'FeatureInsight' };
 };
 
 export const LanguageDetectionStatsId = 'automaticlanguagedetection.stats';
@@ -55,9 +51,9 @@ export interface ILanguageDetectionStats {
 }
 
 export type LanguageDetectionStatsClassification = {
-	languages: { classification: 'SystemMetaData', purpose: 'FeatureInsight' };
-	confidences: { classification: 'SystemMetaData', purpose: 'FeatureInsight' };
-	timeSpent: { classification: 'SystemMetaData', purpose: 'FeatureInsight' };
+	languages: { classification: 'SystemMetaData'; purpose: 'FeatureInsight' };
+	confidences: { classification: 'SystemMetaData'; purpose: 'FeatureInsight' };
+	timeSpent: { classification: 'SystemMetaData'; purpose: 'FeatureInsight' };
 };
 
 //#endregion

@@ -17,8 +17,10 @@ export interface IRemoteAgentEnvironment {
 	extensionHostLogsPath: URI;
 	globalStorageHome: URI;
 	workspaceStorageHome: URI;
+	localHistoryHome: URI;
 	userHome: URI;
 	os: OperatingSystem;
+	arch: string;
 	marks: performance.PerformanceMark[];
 	useHostProxy: boolean;
 }

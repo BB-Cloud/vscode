@@ -3,13 +3,14 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { localize } from 'vs/nls';
+import Severity from 'vs/base/common/severity';
 import { dispose, toDisposable } from 'vs/base/common/lifecycle';
 import { URI } from 'vs/base/common/uri';
-import { IEditorInput, IUntypedEditorInput } from 'vs/workbench/common/editor';
+import { EditorInputCapabilities, IEditorIdentifier, IUntypedEditorInput } from 'vs/workbench/common/editor';
 import { IThemeService, ThemeIcon } from 'vs/platform/theme/common/themeService';
 import { EditorInput } from 'vs/workbench/common/editor/editorInput';
-import { ITerminalInstance, ITerminalInstanceService } from 'vs/workbench/contrib/terminal/browser/terminal';
-import { TerminalEditor } from 'vs/workbench/contrib/terminal/browser/terminalEditor';
+import { ITerminalInstance, ITerminalInstanceService, terminalEditorId } from 'vs/workbench/contrib/terminal/browser/terminal';
 import { getColorClass, getUriClasses } from 'vs/workbench/contrib/terminal/browser/terminalIcon';
 import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
 import { IShellLaunchConfig, TerminalLocation, TerminalSettingId } from 'vs/platform/terminal/common/terminal';
@@ -19,6 +20,7 @@ import { ConfirmOnKill } from 'vs/workbench/contrib/terminal/common/terminal';
 import { IContextKey, IContextKeyService } from 'vs/platform/contextkey/common/contextkey';
 import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
 import { TerminalContextKeys } from 'vs/workbench/contrib/terminal/common/terminalContextKey';
+import { ConfirmResult, IDialogService } from 'vs/platform/dialogs/common/dialogs';
 import { Emitter } from 'vs/base/common/event';
 
 export class TerminalEditorInput extends EditorInput {
@@ -49,7 +51,11 @@ export class TerminalEditorInput extends EditorInput {
 	}
 
 	override get editorId(): string | undefined {
-		return TerminalEditor.ID;
+		return terminalEditorId;
+	}
+
+	override get capabilities(): EditorInputCapabilities {
+		return EditorInputCapabilities.Readonly | EditorInputCapabilities.Singleton;
 	}
 
 	setTerminalInstance(instance: ITerminalInstance): void {
@@ -67,7 +73,7 @@ export class TerminalEditorInput extends EditorInput {
 		});
 	}
 
-	override copy(): IEditorInput {
+	override copy(): EditorInput {
 		const instance = this._terminalInstanceService.createInstance(this._copyLaunchConfig || {}, TerminalLocation.Editor);
 		instance.focusWhenReady();
 		this._copyLaunchConfig = undefined;
@@ -75,7 +81,7 @@ export class TerminalEditorInput extends EditorInput {
 	}
 
 	/**
-	 * Sets the launch config to use for the next call to IEditorInput.copy, which will be used when
+	 * Sets the launch config to use for the next call to EditorInput.copy, which will be used when
 	 * the editor's split command is run.
 	 */
 	setCopyLaunchConfig(launchConfig: IShellLaunchConfig) {
@@ -100,6 +106,28 @@ export class TerminalEditorInput extends EditorInput {
 		return false;
 	}
 
+	override async confirm(terminals?: ReadonlyArray<IEditorIdentifier>): Promise<ConfirmResult> {
+		const { choice } = await this._dialogService.show(
+			Severity.Warning,
+			localize('confirmDirtyTerminal.message', "Do you want to terminate running processes?"),
+			[
+				localize({ key: 'confirmDirtyTerminal.button', comment: ['&& denotes a mnemonic'] }, "&&Terminate"),
+				localize('cancel', "Cancel")
+			],
+			{
+				cancelId: 1,
+				detail: terminals && terminals.length > 1 ?
+					terminals.map(terminal => terminal.editor.getName()).join('\n') + '\n\n' + localize('confirmDirtyTerminals.detail', "Closing will terminate the running processes in the terminals.") :
+					localize('confirmDirtyTerminal.detail', "Closing will terminate the running processes in this terminal.")
+			}
+		);
+
+		switch (choice) {
+			case 0: return ConfirmResult.DONT_SAVE;
+			default: return ConfirmResult.CANCEL;
+		}
+	}
+
 	override async revert(): Promise<void> {
 		// On revert just treat the terminal as permanently non-dirty
 		this._isReverted = true;
@@ -113,7 +141,8 @@ export class TerminalEditorInput extends EditorInput {
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@ILifecycleService private readonly _lifecycleService: ILifecycleService,
-		@IContextKeyService _contextKeyService: IContextKeyService
+		@IContextKeyService _contextKeyService: IContextKeyService,
+		@IDialogService private readonly _dialogService: IDialogService
 	) {
 		super();
 
@@ -195,11 +224,15 @@ export class TerminalEditorInput extends EditorInput {
 		}
 	}
 
+	public override getDescription(): string | undefined {
+		return this._terminalInstance?.description;
+	}
+
 	public override toUntyped(): IUntypedEditorInput {
 		return {
 			resource: this.resource,
 			options: {
-				override: TerminalEditor.ID,
+				override: terminalEditorId,
 				pinned: true,
 				forceReload: true
 			}

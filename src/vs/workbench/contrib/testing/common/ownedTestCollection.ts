@@ -8,10 +8,13 @@ import { CancellationToken } from 'vs/base/common/cancellation';
 import { Emitter } from 'vs/base/common/event';
 import { Disposable } from 'vs/base/common/lifecycle';
 import { assertNever } from 'vs/base/common/types';
+// eslint-disable-next-line code-import-patterns
 import { diffTestItems, ExtHostTestItemEvent, ExtHostTestItemEventOp, getPrivateApiFor, TestItemImpl, TestItemRootImpl } from 'vs/workbench/api/common/extHostTestingPrivateApi';
+// eslint-disable-next-line code-import-patterns
 import * as Convert from 'vs/workbench/api/common/extHostTypeConverters';
-import { applyTestItemUpdate, ITestTag, TestDiffOpType, TestItemExpandState, TestsDiff, TestsDiffOp } from 'vs/workbench/contrib/testing/common/testCollection';
+import { applyTestItemUpdate, ITestTag, namespaceTestTag, TestDiffOpType, TestItemExpandState, TestsDiff, TestsDiffOp } from 'vs/workbench/contrib/testing/common/testCollection';
 import { TestId } from 'vs/workbench/contrib/testing/common/testId';
+import * as editorRange from 'vs/editor/common/core/range';
 
 type TestItemRaw = Convert.TestItem.Raw;
 
@@ -46,6 +49,8 @@ export class SingleUseTestCollection extends Disposable {
 
 	public readonly root = new TestItemRootImpl(this.controllerId, this.controllerId);
 	public readonly tree = new Map</* full test id */string, OwnedCollectionTestItem>();
+	private readonly tags = new Map<string, { label?: string; refCount: number }>();
+
 	protected diff: TestsDiff = [];
 
 	constructor(private readonly controllerId: string) {
@@ -79,34 +84,19 @@ export class SingleUseTestCollection extends Disposable {
 	}
 
 	/**
-	 * Gets all tags associated with items in the collection.
-	 */
-	public *tags() {
-		const seen = new Set<string>();
-		for (const item of this.tree.values()) {
-			for (const tag of item.actual.tags) {
-				if (!seen.has(tag.id)) {
-					seen.add(tag.id);
-					yield tag;
-				}
-			}
-		}
-	}
-
-	/**
 	 * Pushes a new diff entry onto the collected diff list.
 	 */
 	public pushDiff(diff: TestsDiffOp) {
 		// Try to merge updates, since they're invoked per-property
 		const last = this.diff[this.diff.length - 1];
-		if (last && diff[0] === TestDiffOpType.Update) {
-			if (last[0] === TestDiffOpType.Update && last[1].extId === diff[1].extId) {
-				applyTestItemUpdate(last[1], diff[1]);
+		if (last && diff.op === TestDiffOpType.Update) {
+			if (last.op === TestDiffOpType.Update && last.item.extId === diff.item.extId) {
+				applyTestItemUpdate(last.item, diff.item);
 				return;
 			}
 
-			if (last[0] === TestDiffOpType.Add && last[1].item.extId === diff[1].extId) {
-				applyTestItemUpdate(last[1], diff[1]);
+			if (last.op === TestDiffOpType.Add && last.item.item.extId === diff.item.extId) {
+				applyTestItemUpdate(last.item, diff.item);
 				return;
 			}
 		}
@@ -160,7 +150,7 @@ export class SingleUseTestCollection extends Disposable {
 	private onTestItemEvent(internal: OwnedCollectionTestItem, evt: ExtHostTestItemEvent) {
 		switch (evt.op) {
 			case ExtHostTestItemEventOp.Invalidated:
-				this.pushDiff([TestDiffOpType.Retire, internal.fullId.toString()]);
+				this.pushDiff({ op: TestDiffOpType.Retire, itemId: internal.fullId.toString() });
 				break;
 
 			case ExtHostTestItemEventOp.RemoveChild:
@@ -177,27 +167,31 @@ export class SingleUseTestCollection extends Disposable {
 				}
 				break;
 
-			case ExtHostTestItemEventOp.SetProp:
-				const { key, value } = evt;
+			case ExtHostTestItemEventOp.SetProp: {
+				const { key, value, previous } = evt;
 				const extId = internal.fullId.toString();
 				switch (key) {
 					case 'canResolveChildren':
 						this.updateExpandability(internal);
 						break;
 					case 'tags':
-						this.pushDiff([TestDiffOpType.Update, { extId, item: { tags: (value as ITestTag[]).map(v => v.id) }, }]);
+						this.diffTagRefs(value, previous, extId);
 						break;
 					case 'range':
-						this.pushDiff([TestDiffOpType.Update, { extId, item: { range: Convert.Range.from(value) }, }]);
+						this.pushDiff({
+							op: TestDiffOpType.Update,
+							item: { extId, item: { range: editorRange.Range.lift(Convert.Range.from(value)) } },
+						});
 						break;
 					case 'error':
-						this.pushDiff([TestDiffOpType.Update, { extId, item: { error: Convert.MarkdownString.fromStrict(value) || null }, }]);
+						this.pushDiff({ op: TestDiffOpType.Update, item: { extId, item: { error: Convert.MarkdownString.fromStrict(value) || null }, } });
 						break;
 					default:
-						this.pushDiff([TestDiffOpType.Update, { extId, item: { [key]: value ?? null } }]);
+						this.pushDiff({ op: TestDiffOpType.Update, item: { extId, item: { [key]: value ?? null } } });
 						break;
 				}
 				break;
+			}
 			default:
 				assertNever(evt);
 		}
@@ -228,17 +222,18 @@ export class SingleUseTestCollection extends Disposable {
 				expand: TestItemExpandState.NotExpandable, // updated by `connectItemAndChildren`
 			};
 
+			actual.tags.forEach(this.incrementTagRefs, this);
 			this.tree.set(internal.fullId.toString(), internal);
 			this.setItemParent(actual, parent);
-			this.pushDiff([
-				TestDiffOpType.Add,
-				{
+			this.pushDiff({
+				op: TestDiffOpType.Add,
+				item: {
 					parent: internal.parent && internal.parent.toString(),
 					controllerId: this.controllerId,
 					expand: internal.expand,
 					item: Convert.TestItem.from(actual),
 				},
-			]);
+			});
 
 			this.connectItemAndChildren(actual, internal, parent);
 			return;
@@ -259,7 +254,7 @@ export class SingleUseTestCollection extends Disposable {
 		internal.actual = actual;
 		internal.expand = TestItemExpandState.NotExpandable; // updated by `connectItemAndChildren`
 		for (const [key, value] of changedProps) {
-			this.onTestItemEvent(internal, { op: ExtHostTestItemEventOp.SetProp, key, value });
+			this.onTestItemEvent(internal, { op: ExtHostTestItemEventOp.SetProp, key, value, previous: oldActual[key] });
 		}
 
 		this.connectItemAndChildren(actual, internal, parent);
@@ -269,6 +264,45 @@ export class SingleUseTestCollection extends Disposable {
 			if (!actual.children.get(child.id)) {
 				this.removeItem(TestId.joinToString(fullId, child.id));
 			}
+		}
+	}
+
+	private diffTagRefs(newTags: ITestTag[], oldTags: ITestTag[], extId: string) {
+		const toDelete = new Set(oldTags.map(t => t.id));
+		for (const tag of newTags) {
+			if (!toDelete.delete(tag.id)) {
+				this.incrementTagRefs(tag);
+			}
+		}
+
+		this.pushDiff({
+			op: TestDiffOpType.Update,
+			item: { extId, item: { tags: newTags.map(v => Convert.TestTag.namespace(this.controllerId, v.id)) } }
+		});
+
+		toDelete.forEach(this.decrementTagRefs, this);
+	}
+
+	private incrementTagRefs(tag: ITestTag) {
+		const existing = this.tags.get(tag.id);
+		if (existing) {
+			existing.refCount++;
+		} else {
+			this.tags.set(tag.id, { refCount: 1 });
+			this.pushDiff({
+				op: TestDiffOpType.AddTag, tag: {
+					id: Convert.TestTag.namespace(this.controllerId, tag.id),
+					ctrlLabel: this.root.label,
+				}
+			});
+		}
+	}
+
+	private decrementTagRefs(tagId: string) {
+		const existing = this.tags.get(tagId);
+		if (existing && !--existing.refCount) {
+			this.tags.delete(tagId);
+			this.pushDiff({ op: TestDiffOpType.RemoveTag, id: namespaceTestTag(this.controllerId, tagId) });
 		}
 	}
 
@@ -317,7 +351,7 @@ export class SingleUseTestCollection extends Disposable {
 		}
 
 		internal.expand = newState;
-		this.pushDiff([TestDiffOpType.Update, { extId: internal.fullId.toString(), expand: newState }]);
+		this.pushDiff({ op: TestDiffOpType.Update, item: { extId: internal.fullId.toString(), expand: newState } });
 
 		if (newState === TestItemExpandState.Expandable && internal.expandLevels !== undefined) {
 			this.resolveChildren(internal);
@@ -393,7 +427,7 @@ export class SingleUseTestCollection extends Disposable {
 	}
 
 	private pushExpandStateUpdate(internal: OwnedCollectionTestItem) {
-		this.pushDiff([TestDiffOpType.Update, { extId: internal.fullId.toString(), expand: internal.expand }]);
+		this.pushDiff({ op: TestDiffOpType.Update, item: { extId: internal.fullId.toString(), expand: internal.expand } });
 	}
 
 	private removeItem(childId: string) {
@@ -402,7 +436,7 @@ export class SingleUseTestCollection extends Disposable {
 			throw new Error('attempting to remove non-existent child');
 		}
 
-		this.pushDiff([TestDiffOpType.Remove, childId]);
+		this.pushDiff({ op: TestDiffOpType.Remove, itemId: childId });
 
 		const queue: (OwnedCollectionTestItem | undefined)[] = [childItem];
 		while (queue.length) {
@@ -412,6 +446,11 @@ export class SingleUseTestCollection extends Disposable {
 			}
 
 			getPrivateApiFor(item.actual).listener = undefined;
+
+			for (const tag of item.actual.tags) {
+				this.decrementTagRefs(tag.id);
+			}
+
 			this.tree.delete(item.fullId.toString());
 			for (const child of item.actual.children) {
 				queue.push(this.tree.get(TestId.joinToString(item.fullId, child.id)));

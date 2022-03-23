@@ -115,7 +115,10 @@ function fromLocalWebpack(extensionPath, webpackConfigFileName) {
                     result.emit('error', compilation.warnings.join('\n'));
                 }
             };
-            const webpackConfig = Object.assign(Object.assign({}, require(webpackConfigPath)), { mode: 'production' });
+            const webpackConfig = {
+                ...require(webpackConfigPath),
+                ...{ mode: 'production' }
+            };
             const relativeOutputPath = path.relative(extensionPath, webpackConfig.output.path);
             return webpackGulp(webpackConfig, webpack, webpackDone)
                 .pipe(es.through(function (data) {
@@ -218,11 +221,27 @@ const webBuiltInExtensions = productJson.webBuiltInExtensions || [];
  * Loosely based on `getExtensionKind` from `src/vs/workbench/services/extensions/common/extensionManifestPropertiesService.ts`
  */
 function isWebExtension(manifest) {
+    if (Boolean(manifest.browser)) {
+        return true;
+    }
+    if (Boolean(manifest.main)) {
+        return false;
+    }
+    // neither browser nor main
     if (typeof manifest.extensionKind !== 'undefined') {
         const extensionKind = Array.isArray(manifest.extensionKind) ? manifest.extensionKind : [manifest.extensionKind];
-        return (extensionKind.indexOf('web') >= 0);
+        if (extensionKind.indexOf('web') >= 0) {
+            return true;
+        }
     }
-    return (!Boolean(manifest.main) || Boolean(manifest.browser));
+    if (typeof manifest.contributes !== 'undefined') {
+        for (const id of ['debuggers', 'terminal', 'typescriptServerPlugins']) {
+            if (manifest.contributes.hasOwnProperty(id)) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 function packageLocalExtensionsStream(forWeb) {
     const localExtensionsDescriptions = (glob.sync('extensions/*/package.json')
@@ -334,15 +353,13 @@ function translatePackageJSON(packageJSON, packageNLSPath) {
 }
 exports.translatePackageJSON = translatePackageJSON;
 const extensionsPath = path.join(root, 'extensions');
-// Additional projects to webpack. These typically build code for webviews
-const webpackMediaConfigFiles = [
-    'markdown-language-features/webpack.config.js',
-    'simple-browser/webpack.config.js',
-];
 // Additional projects to run esbuild on. These typically build code for webviews
 const esbuildMediaScripts = [
-    'markdown-language-features/esbuild.js',
+    'markdown-language-features/esbuild-notebook.js',
+    'markdown-language-features/esbuild-preview.js',
     'markdown-math/esbuild.js',
+    'notebook-renderers/esbuild.js',
+    'simple-browser/esbuild-preview.js',
 ];
 async function webpackExtensions(taskName, isWatch, webpackConfigLocations) {
     const webpack = require('webpack');
@@ -394,7 +411,7 @@ async function webpackExtensions(taskName, isWatch, webpackConfigLocations) {
                     reject();
                 }
                 else {
-                    reporter(stats === null || stats === void 0 ? void 0 : stats.toJson());
+                    reporter(stats?.toJson());
                 }
             });
         }
@@ -405,7 +422,7 @@ async function webpackExtensions(taskName, isWatch, webpackConfigLocations) {
                     reject();
                 }
                 else {
-                    reporter(stats === null || stats === void 0 ? void 0 : stats.toJson());
+                    reporter(stats?.toJson());
                     resolve();
                 }
             });
@@ -448,17 +465,9 @@ async function esbuildExtensions(taskName, isWatch, scripts) {
     return Promise.all(tasks);
 }
 async function buildExtensionMedia(isWatch, outputRoot) {
-    return Promise.all([
-        webpackExtensions('webpacking extension media', isWatch, webpackMediaConfigFiles.map(p => {
-            return {
-                configPath: path.join(extensionsPath, p),
-                outputRoot: outputRoot ? path.join(root, outputRoot, path.dirname(p)) : undefined
-            };
-        })),
-        esbuildExtensions('esbuilding extension media', isWatch, esbuildMediaScripts.map(p => ({
-            script: path.join(extensionsPath, p),
-            outputRoot: outputRoot ? path.join(root, outputRoot, path.dirname(p)) : undefined
-        }))),
-    ]);
+    return esbuildExtensions('esbuilding extension media', isWatch, esbuildMediaScripts.map(p => ({
+        script: path.join(extensionsPath, p),
+        outputRoot: outputRoot ? path.join(root, outputRoot, path.dirname(p)) : undefined
+    })));
 }
 exports.buildExtensionMedia = buildExtensionMedia;

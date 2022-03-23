@@ -6,18 +6,20 @@
 import * as assert from 'assert';
 import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
 import { TextFileEditorModel } from 'vs/workbench/services/textfile/common/textFileEditorModel';
-import { EncodingMode, TextFileEditorModelState, snapshotToString, isTextFileEditorModel } from 'vs/workbench/services/textfile/common/textfiles';
+import { EncodingMode, TextFileEditorModelState, snapshotToString, isTextFileEditorModel, ITextFileEditorModelSaveEvent } from 'vs/workbench/services/textfile/common/textfiles';
 import { createFileEditorInput, workbenchInstantiationService, TestServiceAccessor, TestReadonlyTextFileEditorModel, getLastResolvedFileStat } from 'vs/workbench/test/browser/workbenchTestServices';
 import { toResource } from 'vs/base/test/common/utils';
 import { TextFileEditorModelManager } from 'vs/workbench/services/textfile/common/textFileEditorModelManager';
 import { FileOperationResult, FileOperationError } from 'vs/platform/files/common/files';
 import { timeout } from 'vs/base/common/async';
-import { ModesRegistry } from 'vs/editor/common/modes/modesRegistry';
+import { ModesRegistry } from 'vs/editor/common/languages/modesRegistry';
 import { assertIsDefined } from 'vs/base/common/types';
 import { createTextBufferFactory, createTextBufferFactoryFromStream } from 'vs/editor/common/model/textModel';
 import { CancellationToken } from 'vs/base/common/cancellation';
 import { URI } from 'vs/base/common/uri';
 import { bufferToStream, VSBuffer } from 'vs/base/common/buffer';
+import { DisposableStore } from 'vs/base/common/lifecycle';
+import { SaveReason, SaveSourceRegistry } from 'vs/workbench/common/editor';
 
 suite('Files - TextFileEditorModel', () => {
 
@@ -27,12 +29,14 @@ suite('Files - TextFileEditorModel', () => {
 		return stat ? stat.mtime : -1;
 	}
 
+	let disposables: DisposableStore;
 	let instantiationService: IInstantiationService;
 	let accessor: TestServiceAccessor;
 	let content: string;
 
 	setup(() => {
-		instantiationService = workbenchInstantiationService();
+		disposables = new DisposableStore();
+		instantiationService = workbenchInstantiationService(undefined, disposables);
 		accessor = instantiationService.createInstance(TestServiceAccessor);
 		content = accessor.fileService.getContent();
 	});
@@ -40,6 +44,7 @@ suite('Files - TextFileEditorModel', () => {
 	teardown(() => {
 		(<TextFileEditorModelManager>accessor.textFileService.files).dispose();
 		accessor.fileService.setContent(content);
+		disposables.dispose();
 	});
 
 	test('basic events', async function () {
@@ -90,8 +95,8 @@ suite('Files - TextFileEditorModel', () => {
 
 		assert.strictEqual(accessor.workingCopyService.dirtyCount, 0);
 
-		let savedEvent = false;
-		model.onDidSave(() => savedEvent = true);
+		let savedEvent: ITextFileEditorModelSaveEvent | undefined = undefined;
+		model.onDidSave(e => savedEvent = e);
 
 		await model.save();
 		assert.ok(!savedEvent);
@@ -110,7 +115,8 @@ suite('Files - TextFileEditorModel', () => {
 			}
 		});
 
-		const pendingSave = model.save();
+		const source = SaveSourceRegistry.registerSource('testSource', 'Hello Save');
+		const pendingSave = model.save({ reason: SaveReason.AUTO, source });
 		assert.ok(model.hasState(TextFileEditorModelState.PENDING_SAVE));
 
 		await Promise.all([pendingSave, model.joinState(TextFileEditorModelState.PENDING_SAVE)]);
@@ -118,12 +124,15 @@ suite('Files - TextFileEditorModel', () => {
 		assert.ok(model.hasState(TextFileEditorModelState.SAVED));
 		assert.ok(!model.isDirty());
 		assert.ok(savedEvent);
+		assert.ok((savedEvent as ITextFileEditorModelSaveEvent).stat);
+		assert.strictEqual((savedEvent as ITextFileEditorModelSaveEvent).reason, SaveReason.AUTO);
+		assert.strictEqual((savedEvent as ITextFileEditorModelSaveEvent).source, source);
 		assert.ok(workingCopyEvent);
 
 		assert.strictEqual(accessor.workingCopyService.dirtyCount, 0);
 		assert.strictEqual(accessor.workingCopyService.isDirty(model.resource, model.typeId), false);
 
-		savedEvent = false;
+		savedEvent = undefined;
 
 		await model.save({ force: true });
 		assert.ok(savedEvent);
@@ -185,6 +194,26 @@ suite('Files - TextFileEditorModel', () => {
 
 		assert.ok(savedEvent);
 		assert.strictEqual(model.isDirty(), false);
+
+		model.dispose();
+		assert.ok(!accessor.modelService.getModel(model.resource));
+	});
+
+	test('save - returns false when save fails', async function () {
+		const model: TextFileEditorModel = instantiationService.createInstance(TextFileEditorModel, toResource.call(this, '/path/index_async.txt'), 'utf8', undefined);
+
+		await model.resolve();
+
+		accessor.fileService.writeShouldThrowError = new Error('failed to write');
+		try {
+			const res = await model.save({ force: true });
+			assert.strictEqual(res, false);
+		} finally {
+			accessor.fileService.writeShouldThrowError = undefined;
+		}
+
+		const res = await model.save({ force: true });
+		assert.strictEqual(res, true);
 
 		model.dispose();
 		assert.ok(!accessor.modelService.getModel(model.resource));
@@ -292,17 +321,17 @@ suite('Files - TextFileEditorModel', () => {
 		model.dispose();
 	});
 
-	test('create with mode', async function () {
-		const mode = 'text-file-model-test';
+	test('create with language', async function () {
+		const languageId = 'text-file-model-test';
 		ModesRegistry.registerLanguage({
-			id: mode,
+			id: languageId,
 		});
 
-		const model: TextFileEditorModel = instantiationService.createInstance(TextFileEditorModel, toResource.call(this, '/path/index_async.txt'), 'utf8', mode);
+		const model: TextFileEditorModel = instantiationService.createInstance(TextFileEditorModel, toResource.call(this, '/path/index_async.txt'), 'utf8', languageId);
 
 		await model.resolve();
 
-		assert.strictEqual(model.textEditorModel!.getModeId(), mode);
+		assert.strictEqual(model.textEditorModel!.getLanguageId(), languageId);
 
 		model.dispose();
 		assert.ok(!accessor.modelService.getModel(model.resource));

@@ -32,6 +32,7 @@ export interface ITestItemSetProp {
 	op: ExtHostTestItemEventOp.SetProp;
 	key: keyof vscode.TestItem;
 	value: any;
+	previous: any;
 }
 export interface ITestItemBulkReplace {
 	op: ExtHostTestItemEventOp.Bulk;
@@ -81,14 +82,20 @@ const testItemPropAccessor = <K extends keyof vscode.TestItem>(
 		},
 		set(newValue: vscode.TestItem[K]) {
 			if (!equals(value, newValue)) {
+				const oldValue = value;
 				value = newValue;
-				api.listener?.({ op: ExtHostTestItemEventOp.SetProp, key, value: newValue });
+				api.listener?.({
+					op: ExtHostTestItemEventOp.SetProp,
+					key,
+					value: newValue,
+					previous: oldValue,
+				});
 			}
 		},
 	};
 };
 
-type WritableProps = Pick<vscode.TestItem, 'range' | 'label' | 'description' | 'canResolveChildren' | 'busy' | 'error' | 'tags'>;
+type WritableProps = Pick<vscode.TestItem, 'range' | 'label' | 'description' | 'sortText' | 'canResolveChildren' | 'busy' | 'error' | 'tags'>;
 
 const strictEqualComparator = <T>(a: T, b: T) => a === b;
 
@@ -100,6 +107,7 @@ const propComparators: { [K in keyof Required<WritableProps>]: (a: vscode.TestIt
 	},
 	label: strictEqualComparator,
 	description: strictEqualComparator,
+	sortText: strictEqualComparator,
 	busy: strictEqualComparator,
 	error: strictEqualComparator,
 	canResolveChildren: strictEqualComparator,
@@ -122,6 +130,7 @@ const makePropDescriptors = (api: IExtHostTestItemApi, label: string): { [K in k
 	range: testItemPropAccessor(api, 'range', undefined, propComparators.range),
 	label: testItemPropAccessor(api, 'label', label, propComparators.label),
 	description: testItemPropAccessor(api, 'description', undefined, propComparators.description),
+	sortText: testItemPropAccessor(api, 'sortText', undefined, propComparators.sortText),
 	canResolveChildren: testItemPropAccessor(api, 'canResolveChildren', false, propComparators.canResolveChildren),
 	busy: testItemPropAccessor(api, 'busy', false, propComparators.busy),
 	error: testItemPropAccessor(api, 'error', undefined, propComparators.error),
@@ -261,6 +270,7 @@ export class TestItemImpl implements vscode.TestItem {
 
 	public range!: vscode.Range | undefined;
 	public description!: string | undefined;
+	public sortText!: string | undefined;
 	public label!: string;
 	public error!: string | vscode.MarkdownString;
 	public busy!: boolean;

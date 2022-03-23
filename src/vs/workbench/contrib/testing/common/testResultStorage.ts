@@ -43,12 +43,17 @@ export interface ITestResultStorage {
 
 export const ITestResultStorage = createDecorator('ITestResultStorage');
 
-const currentRevision = 0;
+/**
+ * Data revision this version of VS Code deals with. Should be bumped whenever
+ * a breaking change is made to the stored results, which will cause previous
+ * revisions to be discarded.
+ */
+const currentRevision = 1;
 
 export abstract class BaseTestResultStorage implements ITestResultStorage {
 	declare readonly _serviceBrand: undefined;
 
-	protected readonly stored = new StoredValue<ReadonlyArray<{ rev: number, id: string, bytes: number }>>({
+	protected readonly stored = new StoredValue<ReadonlyArray<{ rev: number; id: string; bytes: number }>>({
 		key: 'storedTestResults',
 		scope: StorageScope.WORKSPACE,
 		target: StorageTarget.MACHINE
@@ -113,7 +118,7 @@ export abstract class BaseTestResultStorage implements ITestResultStorage {
 	 */
 	public async persist(results: ReadonlyArray<ITestResult>): Promise<void> {
 		const toDelete = new Map(this.stored.get([]).map(({ id, bytes }) => [id, bytes]));
-		const toStore: { rev: number, id: string; bytes: number }[] = [];
+		const toStore: { rev: number; id: string; bytes: number }[] = [];
 		const todo: Promise<unknown>[] = [];
 		let budget = RETAIN_MAX_BYTES;
 

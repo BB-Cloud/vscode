@@ -8,7 +8,9 @@ import { CommandManager } from './commandManager';
 import * as commands from './commands/index';
 import LinkProvider from './features/documentLinkProvider';
 import MDDocumentSymbolProvider from './features/documentSymbolProvider';
+import { registerDropIntoEditor } from './features/dropIntoEditor';
 import MarkdownFoldingProvider from './features/foldingProvider';
+import { PathCompletionProvider } from './features/pathCompletions';
 import { MarkdownContentProvider } from './features/previewContentProvider';
 import { MarkdownPreviewManager } from './features/previewManager';
 import MarkdownSmartSelect from './features/smartSelect';
@@ -44,6 +46,8 @@ export function activate(context: vscode.ExtensionContext) {
 		logger.updateConfiguration();
 		previewManager.updateConfiguration();
 	}));
+
+	context.subscriptions.push(registerDropIntoEditor());
 }
 
 function registerMarkdownLanguageFeatures(
@@ -54,10 +58,11 @@ function registerMarkdownLanguageFeatures(
 
 	return vscode.Disposable.from(
 		vscode.languages.registerDocumentSymbolProvider(selector, symbolProvider),
-		vscode.languages.registerDocumentLinkProvider(selector, new LinkProvider()),
+		vscode.languages.registerDocumentLinkProvider(selector, new LinkProvider(engine)),
 		vscode.languages.registerFoldingRangeProvider(selector, new MarkdownFoldingProvider(engine)),
 		vscode.languages.registerSelectionRangeProvider(selector, new MarkdownSmartSelect(engine)),
-		vscode.languages.registerWorkspaceSymbolProvider(new MarkdownWorkspaceSymbolProvider(symbolProvider))
+		vscode.languages.registerWorkspaceSymbolProvider(new MarkdownWorkspaceSymbolProvider(symbolProvider)),
+		PathCompletionProvider.register(selector, engine),
 	);
 }
 

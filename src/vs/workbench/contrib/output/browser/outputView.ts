@@ -9,7 +9,7 @@ import { ICodeEditor } from 'vs/editor/browser/editorBrowser';
 import { IEditorOptions as ICodeEditorOptions } from 'vs/editor/common/config/editorOptions';
 import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
 import { IStorageService } from 'vs/platform/storage/common/storage';
-import { ITextResourceConfigurationService } from 'vs/editor/common/services/textResourceConfigurationService';
+import { ITextResourceConfigurationService } from 'vs/editor/common/services/textResourceConfiguration';
 import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
 import { IContextKeyService, IContextKey } from 'vs/platform/contextkey/common/contextkey';
 import { IEditorOpenContext } from 'vs/workbench/common/editor';
@@ -20,7 +20,7 @@ import { IConfigurationService } from 'vs/platform/configuration/common/configur
 import { IEditorGroupsService } from 'vs/workbench/services/editor/common/editorGroupsService';
 import { CancellationToken } from 'vs/base/common/cancellation';
 import { IEditorService } from 'vs/workbench/services/editor/common/editorService';
-import { CursorChangeReason } from 'vs/editor/common/controller/cursorEvents';
+import { CursorChangeReason } from 'vs/editor/common/cursorEvents';
 import { ViewPane, IViewPaneOptions } from 'vs/workbench/browser/parts/views/viewPane';
 import { IKeybindingService } from 'vs/platform/keybinding/common/keybinding';
 import { IContextMenuService, IContextViewService } from 'vs/platform/contextview/browser/contextView';
@@ -211,6 +211,11 @@ export class OutputEditor extends AbstractTextResourceEditor {
 		options.padding = undefined;
 		options.readOnly = true;
 		options.domReadOnly = true;
+		options.unicodeHighlight = {
+			nonBasicASCII: false,
+			invisibleCharacters: false,
+			ambiguousCharacters: false,
+		};
 
 		const outputConfig = this.configurationService.getValue<any>('[Log]');
 		if (outputConfig) {
@@ -271,7 +276,7 @@ export class OutputEditor extends AbstractTextResourceEditor {
 
 class SwitchOutputActionViewItem extends SelectActionViewItem {
 
-	private static readonly SEPARATOR = '─────────';
+	private static readonly SEPARATOR = '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500';
 
 	private outputChannels: IOutputChannelDescriptor[] = [];
 	private logChannels: IOutputChannelDescriptor[] = [];
@@ -282,15 +287,15 @@ class SwitchOutputActionViewItem extends SelectActionViewItem {
 		@IThemeService private readonly themeService: IThemeService,
 		@IContextViewService contextViewService: IContextViewService
 	) {
-		super(null, action, [], 0, contextViewService, { ariaLabel: nls.localize('outputChannels', 'Output Channels.'), optionsAsChildren: true });
+		super(null, action, [], 0, contextViewService, { ariaLabel: nls.localize('outputChannels', "Output Channels"), optionsAsChildren: true });
 
 		let outputChannelRegistry = Registry.as<IOutputChannelRegistry>(Extensions.OutputChannels);
-		this._register(outputChannelRegistry.onDidRegisterChannel(() => this.updateOtions()));
-		this._register(outputChannelRegistry.onDidRemoveChannel(() => this.updateOtions()));
-		this._register(this.outputService.onActiveOutputChannel(() => this.updateOtions()));
+		this._register(outputChannelRegistry.onDidRegisterChannel(() => this.updateOptions()));
+		this._register(outputChannelRegistry.onDidRemoveChannel(() => this.updateOptions()));
+		this._register(this.outputService.onActiveOutputChannel(() => this.updateOptions()));
 		this._register(attachSelectBoxStyler(this.selectBox, themeService));
 
-		this.updateOtions();
+		this.updateOptions();
 	}
 
 	override render(container: HTMLElement): void {
@@ -306,7 +311,7 @@ class SwitchOutputActionViewItem extends SelectActionViewItem {
 		return channel ? channel.id : option;
 	}
 
-	private updateOtions(): void {
+	private updateOptions(): void {
 		const groups = groupBy(this.outputService.getChannelDescriptors(), (c1: IOutputChannelDescriptor, c2: IOutputChannelDescriptor) => {
 			if (!c1.log && c2.log) {
 				return -1;
